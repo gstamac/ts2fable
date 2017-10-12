@@ -573,8 +573,18 @@ function getStringEnum(node) {
         kind: "stringEnum",
         name: getName(node),
         properties: node.type.types.map(function (n) {
-            return { name : n.text }
+            return { name : n.literal.text }
         }),
+        parents: [],
+        methods: []
+    }
+}
+
+function getSingleStringEnum(node) {
+    return {
+        kind: "stringEnum",
+        name: getName(node),
+        properties: [ { name: node.type.literal.text } ],
         parents: [],
         methods: []
     }
@@ -789,8 +799,10 @@ function visitModuleNode(mod, modPath) {
                 mod.interfaces.push(visitInterface(node, { kind: "class", path: modPath }));
                 break;
             case ts.SyntaxKind.TypeAliasDeclaration:
-                if (node.type.types && node.type.types[0].kind == ts.SyntaxKind.StringLiteralType)
+                if (node.type.types && node.type.types[0].kind == ts.SyntaxKind.LiteralType)
                     mod.interfaces.push(getStringEnum(node))
+                else if (!node.type.types && node.type.kind == ts.SyntaxKind.LiteralType)
+                    mod.interfaces.push(getSingleStringEnum(node))
                 else
                     mod.interfaces.push(visitInterface(node, { kind: "alias", path: modPath }));
                 break;
@@ -874,5 +886,6 @@ try {
 }
 catch (err) {
     console.log("ERROR: " + err);
+    console.log(err.stack)
     process.exit(1);
 }
