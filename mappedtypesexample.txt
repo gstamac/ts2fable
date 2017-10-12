@@ -1,0 +1,5 @@
+React.MouseEvent<HTMLElement>   React.MouseEvent
+React.DragEvent<HTMLElement>    React.DragEvent
+React.TouchEvent<HTMLElement>   React.TouchEvent
+React.KeyboardEvent<HTMLElement>    React.KeyboardEvent
+React.FocusEvent<HTMLElement>   React.FocusEvent

@@ -540,6 +540,9 @@ function getType(type) {
             }
 
             var result = name + printTypeArguments(type.typeArguments);
+            if (result in mappedTypes) {
+                result = mappedTypes[result];
+            }
             return (typeParameters.indexOf(result) > -1 ? "'" : "") + result;
     }
 }
@@ -870,11 +873,24 @@ function visitFile(node) {
     };
 }
 
+function loadMappedTypes(types)
+{
+    types.split(/[\n\r]+/).forEach(l => {
+        var t = l.split(/[ \t]+/);
+        if (t && t.length == 2)
+            mappedTypes[t[0]] = t[1];
+    });
+}
+
 try {
     var filePath = process.argv[2];
     if (filePath == null)
         throw "Please provide the path to a TypeScript definition file";
 
+    var typeConvertFilePath = process.argv[3];
+    if (typeConvertFilePath != null)
+        loadMappedTypes(fs.readFileSync(typeConvertFilePath).toString());
+        
     // fileName = (fileName = path.basename(filePath).replace(".d.ts",""), fileName[0].toUpperCase() + fileName.substr(1));
     // `readonly` keyword is causing problems, remove it
     var code = fs.readFileSync(filePath).toString().replace(/readonly/g, "");
