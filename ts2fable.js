@@ -6,10 +6,11 @@ var ts = require("typescript");
 
 var templates = {
 file:
-`namespace rec Fable.Import
+`namespace rec [NAMESPACE]
 open System
 open System.Text.RegularExpressions
 open Fable.Core
+open Fable.Import
 open Fable.Import.JS
 
 `,
@@ -18,8 +19,16 @@ interface:
 `[TYPE_KEYWORD] [<AllowNullLiteral>] [DECORATOR][NAME][CONSTRUCTOR] =
 `,
 
+interfaceWithoutAllowNullLiteral:
+`[TYPE_KEYWORD] [DECORATOR][NAME][CONSTRUCTOR] =
+`,
+
 enum:
 `[TYPE_KEYWORD] [DECORATOR][NAME] =
+`,
+
+stringEnum:
+`[<StringEnum>] [TYPE_KEYWORD] [DECORATOR][NAME] =
 `,
 
 alias:
@@ -37,7 +46,7 @@ module:
 `,
 
 moduleProxy:
-`type [IMPORT]Globals =
+`type [IMPORT][GLOBALS_NAME] =
 `,
 
 property:
@@ -166,6 +175,8 @@ var mappedTypes = {
   String: "string",
   Number: "float"
 };
+var importNamespace = 'Fable.Import';
+var useComposition = false;
 
 function escape(x) {
     // HACK: ignore strings with a comment (* ... *), tuples ( * )
@@ -354,7 +365,7 @@ function printClassMembers(prefix, ent) {
 
 function printImport(path, name) {
     if (!name) {
-        return "[<Erase>]";
+        return "[<Erase>] ";
     }
     else {
         var fullPath = joinPath(path, name.replace(genReg, ""));
@@ -371,17 +382,19 @@ function printInterface(prefix) {
         switch (ifc.kind) {
             case "class":
                 return printImport(ifc.path, ifc.name);
-            case "stringEnum":
-                return "[<StringEnum>] ";
+            // case "stringEnum":
+            //     return "[<StringEnum>] ";
             default:
                 return "";
         }
     }
     return function (ifc, i) {
-        var isEnum = ifc.kind === "enum" || ifc.kind === "stringEnum";
+        var isEnum = ifc.kind === "enum";
+        var isStringEnum = ifc.kind === "stringEnum";
         var isAlias = ifc.kind === "alias";
         var template = 
             isEnum ? templates.enum : 
+            isStringEnum ? templates.stringEnum :
             isAlias ? templates.alias :
             templates.interface;
         var template = 
@@ -428,8 +441,10 @@ function printInterface(prefix) {
 function printGlobals(prefix, ent) {
     var members = printClassMembers(prefix + "    " + (ent.name ? "" : "[<Global>] " ), ent);
     if (members.length > 0) {
-        return prefix + templates.moduleProxy.replace(
-            "[IMPORT]", printImport(ent.path, ent.name)) + members;
+        let globalsName = (ent.properties.length > 0 ? ent.properties[0].name : (ent.methods.length > 0 ? ent.methods[0].name : "")) + "Globals"
+        return prefix + templates.moduleProxy
+            .replace("[GLOBALS_NAME]", globalsName)
+            .replace("[IMPORT]", printImport(ent.path, ent.name)) + members;
     }
     return "";
 }
@@ -451,7 +466,8 @@ function printModule(prefix) {
 }
 
 function printFile(file) {
-    var template = templates.file;
+    var template = templates.file
+        .replace('[NAMESPACE]', importNamespace);
     template = append(template, file.interfaces.map(printInterface("")).join("\n\n"));
     template = append(template, printGlobals("", file));
     return template + file.modules.map(printModule("")).join("\n\n");
@@ -873,13 +889,15 @@ function visitFile(node) {
     };
 }
 
-function loadMappedTypes(types)
+function loadConfig(config)
 {
-    types.split(/[\n\r]+/).forEach(l => {
-        var t = l.split(/[ \t]+/);
-        if (t && t.length == 2)
-            mappedTypes[t[0]] = t[1];
-    });
+    if (config.mappedTypes)
+        Object.assign(mappedTypes, config.mappedTypes);
+    if (config.importNamespace)
+        importNamespace = config.importNamespace;
+    if (config.skipAllowNullLiteral)
+        templates.interface = templates.interfaceWithoutAllowNullLiteral;
+    useComposition = config.useComposition;
 }
 
 try {
@@ -887,9 +905,11 @@ try {
     if (filePath == null)
         throw "Please provide the path to a TypeScript definition file";
 
-    var typeConvertFilePath = process.argv[3];
-    if (typeConvertFilePath != null)
-        loadMappedTypes(fs.readFileSync(typeConvertFilePath).toString());
+    var configFilePath = process.argv[3];
+    if (configFilePath != null)
+        // loadConfig(fs.readFileSync(configFilePath).toString());
+        // loadConfig(require(configFilePath));
+        loadConfig(JSON.parse(fs.readFileSync(configFilePath).toString()));
         
     // fileName = (fileName = path.basename(filePath).replace(".d.ts",""), fileName[0].toUpperCase() + fileName.substr(1));
     // `readonly` keyword is causing problems, remove it
@@ -897,6 +917,7 @@ try {
     var sourceFile = ts.createSourceFile(filePath, code, ts.ScriptTarget.ES6, /*setParentNodes*/ true);
     var fileInfo = visitFile(sourceFile);
     var ffi = printFile(fileInfo)
+    console.log('// ' + filePath);
     console.log(ffi);
     process.exit(0);
 }
