@@ -226,7 +226,6 @@ var importNamespace = 'Fable.Import';
 var skipAllowNullLiteral = false;
 var createReactHelpers = false;
 var reactModuleName = "";
-var ignoreMembers = [];
 
 function escape(x) {
     // HACK: ignore strings with a comment (* ... *), tuples ( * )
@@ -386,7 +385,7 @@ function printMembers(prefix, ent) {
 function printFieldTypesForHelper(prefix, fields) {
     return fields.map(p => {
         return prefix 
-            + (p.isIgnored ? "// IGNORED " : p.isDuplicate ? "// OVERWRITTEN " : "") 
+            + (p.isDuplicate ? "// OVERWRITTEN " : "") 
             + (p.emit ? '[<Emit("' + p.emit + '")>] ' : "") 
             + templates.fieldTypeForHelper
                 .replace("[NAME]", stringToUnionCase(p.name))
@@ -395,49 +394,9 @@ function printFieldTypesForHelper(prefix, fields) {
     }).filter(x => x.trim().length > 0).join("\n");
 }
 
-// function printFieldsForHelper(prefix, fields) {
-//     return fields.map(p => {
-//         return prefix 
-//             + (p.isIgnored ? "// IGNORED " : p.isDuplicate ? "// OVERWRITTEN " : "") 
-//             + (p.emit ? '[<Emit("' + p.emit + '")>] ' : "") 
-//             + templates.fieldForHelper
-//                 .replace("[NAME]", escape(p.name))
-//                 .replace("[TYPE]", escape(p.type))
-//                 .replace("[COMMENT]", p.parentName ? ("// " + p.parentName) : "");
-//     }).filter(x => x.trim().length > 0).join("\n");
-// }
-
-// function printConstructorParametersForPropsHelper(prefix, fields) {
-//     return fields.filter(p => !p.isDuplicate).map(p => {
-//         if (p.optional) return "";
-//         return prefix + templates.constructorParameterForPropsHelper
-//             .replace("[NAME]", escape(p.name))
-//             .replace("[TYPE]", escape(p.type));
-//     }).filter(x => x.trim().length > 0).join(",\n");
-// }
-
-// function printConstructorValuesForPropsHelper(prefix, fields) {
-//     return fields.filter(p => !p.isDuplicate && !p.isIgnored).map(p => {
-//         let value = "!";
-//         if (!p.optional) {
-//             value = escape(p.name);
-//         } else {
-//             var fieldType = typeCache[p.type];
-//             if (fieldType && fieldType.kind == "stringEnum" && fieldType.properties.length > 0)
-//                 value = stringToUnionCase(fieldType.properties[0].name);
-//             else
-//                 value = "Unchecked.defaultof<" + escape(p.type) + ">";
-//         }
-        
-//         return prefix + templates.constructorValueForPropsHelper
-//             .replace("[NAME]", escape(p.name))
-//             .replace("[VALUE]", value);
-//     }).filter(x => x.trim().length > 0).join("\n");
-// }
-
 function getFieldsForHelper(ent, parentName) {
     var arr = getMembersForHelperSub(ent, parentName, []).filter(p => p != null);
-    arr.forEach((p, i) => p.isDuplicate = arr.find((p1, i1) => !p.isIgnored && i1 > i && p1.name == p.name));
+    arr.forEach((p, i) => p.isDuplicate = arr.find((p1, i1) => i1 > i && p1.name == p.name));
     return arr;
 }
 
@@ -474,7 +433,6 @@ function getPropertiesForHelper(parentName) {
             type: x.type,
             optional: x.optional,
             parentName: parentName,
-            isIgnored: ignoreMembers.indexOf(parentName + "." + x.name) >= 0,
             isDuplicate: false
         };
         return prop;
@@ -605,34 +563,6 @@ function printGlobals(prefix, ent) {
     return "";
 }
 
-// function printInterfaceHelper(prefix) {
-//     return function (ifc, i) {
-//         if (ifc.kind !== "interface") return printInterface(prefix)(ifc, i);
-//         if (getReactComponentClassPropsTypeName(ifc)) return printInterface(prefix)(ifc, i);
-//         var fields = getFieldsForHelper(ifc);
-//         if (fields.length == 0) return printInterface(prefix)(ifc, i);
-//         return prefix + templates.unionTypeForHelper
-//             .replace(/\[NAME\]/g, escape(ifc.name))
-//             .replace("[TYPES]", printFieldTypesForHelper(prefix + "    ", fields));
-//     }
-// }
-
-// function printInterfaceHelper2(prefix) {
-//     function printDecorator(ifc) {
-//         return (skipAllowNullLiteral ? "" : "[<AllowNullLiteral>] ");
-//     }
-//     return function (ifc, i) {
-//         if (ifc.kind !== "interface") return printInterface(prefix)(ifc, i);
-//         if (getReactComponentClassPropsTypeName(ifc)) return printInterface(prefix)(ifc, i);
-//         var fields = getFieldsForHelper(ifc);
-//         if (fields.length == 0) return printInterface(prefix)(ifc, i);
-//         return prefix + templates.recordForHelper
-//             .replace(/\[NAME\]/g, escape(ifc.name))
-//             .replace("[DECORATOR]", printDecorator(ifc))
-//             .replace("[PROPERTIES]", printFieldsForHelper(prefix + "    ", fields));
-//     }
-// }
-
 function printReactComponentHelpers(prefix, ent) {
     return [
         printArray(ent.properties, printReactHelperComponent(prefix)),
@@ -682,30 +612,6 @@ function convertReactComponentClassNameIfNeeded(className) {
     var propTypeName = propsTypeName.substr(0, propsTypeName.length - 1);
     return className.replace("<" + propsTypeName + ">", "<I" + propTypeName + ">");
 }
-
-// function printReactHelperComponent2(prefix) {
-//     return function (x) {
-//         var propsTypeName = getReactComponentClassPropsTypeName(x.type);
-//         if (!propsTypeName) return "";
-//         var propsType = typeCache[propsTypeName];
-//         var fields = getFieldsForHelper(propsType);
-//         var subPrefix = prefix + "        ";
-//         var constructorParams = printConstructorParametersForPropsHelper(subPrefix + "    ", fields);
-//         if (constructorParams.length > 0) {
-//             constructorParams = "\n" + subPrefix + "(\n" + constructorParams + "\n" + subPrefix + ")";
-//         } else {
-//             constructorParams = "()";
-//         }
-
-//         return prefix + templates.componentHelperModule
-//             .replace("[REACT_MODULE_NAME]", reactModuleName)
-//             .replace(/\[COMPONENT_NAME\]/g, escape(x.name))
-//             .replace("[COMPONENT_TYPE]", x.type)
-//             .replace("[PROPS_CONSTRUCTOR_PARAMS]", constructorParams)
-//             .replace("[PROPS_TYPE]", escape(propsTypeName))
-//             .replace("[PROPS_VALUES]", printConstructorValuesForPropsHelper(subPrefix + "    ", fields));
-//         }
-// }
 
 function printModule(prefix) {
     return function (mod) {
@@ -1172,8 +1078,6 @@ function loadConfig(config) {
         reactModuleName = config.createReactHelpersFor;
     }
     typeCacheFile = config.typeCacheFile;
-    if (config.ignoreMembers)
-        ignoreMembers = ignoreMembers.concat(config.ignoreMembers);
 }
 
 try {
