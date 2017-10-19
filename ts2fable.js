@@ -83,6 +83,7 @@ module [COMPONENT_NAME] =
     let [COMPONENT_NAME]Comp: [COMPONENT_TYPE] = jsNative 
 
     let inline comp (b: I[PROP_NAME] list) c = Fable.Helpers.React.from [COMPONENT_NAME]Comp !!(keyValueList CaseRules.LowerFirst b) c
+    let inline comp2 (b: Fable.Helpers.React.Props.IHTMLProp list) c = Fable.Helpers.React.from [COMPONENT_NAME]Comp !!(keyValueList CaseRules.LowerFirst b) c
 `,
 
 componentHelperModule2:
