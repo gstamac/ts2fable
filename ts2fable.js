@@ -1114,7 +1114,7 @@ try {
     process.exit(0);
 }
 catch (err) {
-    console.log("ERROR: " + err);
-    console.log(err.stack)
+    console.error("ERROR: " + err);
+    console.error(err.stack)
     process.exit(1);
 }
