@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 var fs = require("fs");
-var path = require("path");
 var ts = require("typescript");
 
 var templates = {
@@ -12,27 +11,29 @@ open System.Text.RegularExpressions
 open Fable.Core
 open Fable.Import
 open Fable.Import.JS
+open Fable.Core.JsInterop
 
 `,
 
 interface:
-`[TYPE_KEYWORD] [<AllowNullLiteral>] [DECORATOR][NAME][CONSTRUCTOR] =
+`type [DECORATOR][NAME][CONSTRUCTOR] =
 `,
 
-interfaceWithoutAllowNullLiteral:
-`[TYPE_KEYWORD] [DECORATOR][NAME][CONSTRUCTOR] =
+class:
+`type [DECORATOR][NAME][CONSTRUCTOR] =
 `,
 
 enum:
-`[TYPE_KEYWORD] [DECORATOR][NAME] =
+`type [DECORATOR][NAME] =
 `,
 
 stringEnum:
-`[<StringEnum>] [TYPE_KEYWORD] [DECORATOR][NAME] =
+`[<StringEnum>] 
+type [DECORATOR][NAME] =
 `,
 
 alias:
-`[TYPE_KEYWORD] [DECORATOR][NAME] =
+`type [DECORATOR][NAME] =
 `,
 
 classProperty:
@@ -56,7 +57,52 @@ method:
 `abstract [NAME]: [PARAMETERS] -> [TYPE]`,
 
 enumCase:
-`    | [NAME] = [ID]`
+`    | [NAME] = [ID]`,
+
+recordForHelper:
+`[<Pojo>] 
+type [DECORATOR][NAME] = {
+[PROPERTIES]
+}
+`,
+
+fieldForHelper:
+`[NAME]: [TYPE] [COMMENT]`,
+
+fieldTypeForHelper:
+`| [NAME] of [TYPE] [COMMENT]`,
+
+componentHelperModule:
+`type I[PROP_NAME] = inherit Fable.Helpers.React.Props.IHTMLProp
+type [PROP_NAME] = 
+[PROP_TYPES]
+    interface I[PROP_NAME]
+
+module [COMPONENT_NAME] =
+    [<Import("[COMPONENT_NAME]", from="[REACT_MODULE_NAME]")>]
+    let [COMPONENT_NAME]Comp: [COMPONENT_TYPE] = jsNative 
+
+    let inline comp (b: I[PROP_NAME] list) c = Fable.Helpers.React.from [COMPONENT_NAME]Comp !!(keyValueList CaseRules.LowerFirst b) c
+`,
+
+componentHelperModule2:
+`module [COMPONENT_NAME] =
+    let props[PROPS_CONSTRUCTOR_PARAMS]: [PROPS_TYPE] = {
+[PROPS_VALUES]
+        }
+        
+    [<Import("[COMPONENT_NAME]", from="[REACT_MODULE_NAME]")>]
+    let [COMPONENT_NAME]Comp: [COMPONENT_TYPE] = jsNative 
+
+    let inline comp b c = Fable.Helpers.React.from [COMPONENT_NAME]Comp b c
+`,
+
+constructorParameterForPropsHelper:
+`[NAME]: [TYPE]`
+,
+
+constructorValueForPropsHelper:
+`[NAME] = [VALUE]`
 };
 
 var reserved = [
@@ -165,18 +211,22 @@ var keywords = [
 ];
 
 var typeCache = {};
+var typeCacheFile = false;
 
 var genReg = /<.+?>$/;
 var mappedTypes = {
-  Date: "DateTime",
-  Object: "obj",
-  Array: "ResizeArray",
-  RegExp: "Regex",
-  String: "string",
-  Number: "float"
+    Date: "DateTime",
+    Object: "obj",
+    Array: "ResizeArray",
+    RegExp: "Regex",
+    String: "string",
+    Number: "float"
 };
 var importNamespace = 'Fable.Import';
-var useComposition = false;
+var skipAllowNullLiteral = false;
+var createReactHelpers = false;
+var reactModuleName = "";
+var ignoreMembers = [];
 
 function escape(x) {
     // HACK: ignore strings with a comment (* ... *), tuples ( * )
@@ -186,7 +236,7 @@ function escape(x) {
         return x;
     }
     var genParams = genReg.exec(x);
-    var name = x.replace(genReg,"")
+    var name = x.replace(genReg, "")
     name = (keywords.indexOf(name) >= 0 || reserved.indexOf(name) >= 0 || /[^\w.']/.test(name))
         ? "``" + name + "``"
         : name;
@@ -230,7 +280,7 @@ function isDuplicate(member, other) {
 
     for (var m of other) {
         if (m.name === member.name && arrayEquals(
-            m.parameters, member.parameters, (x,y) => x.type == y.type))
+            m.parameters, member.parameters, (x, y) => x.type == y.type))
             return true;
     }
     return false;
@@ -255,18 +305,18 @@ function printParameters(parameters, sep, def) {
 
 function printMethod(prefix) {
     return function (x) {
-        return prefix + (x.emit ? '[<Emit("' + x.emit +'")>] ' : "") + templates.method
-                .replace("[NAME]", escape(x.name))
-                .replace("[TYPE]", escape(x.type))
-                .replace("[PARAMETERS]", printParameters(x.parameters, " * ", "unit"));
+        return prefix + (x.emit ? '[<Emit("' + x.emit + '")>] ' : "") + templates.method
+            .replace("[NAME]", escape(x.name))
+            .replace("[TYPE]", escape(x.type))
+            .replace("[PARAMETERS]", printParameters(x.parameters, " * ", "unit"));
     }
 }
 
 function printProperty(prefix) {
     return function (x) {
         var param = Array.isArray(x.parameters) && x.parameters.length === 1
-                    ? printParameters(x.parameters) + " -> " : "";
-        return prefix + (x.emit ? '[<Emit("' + x.emit +'")>] ' : "") + templates.property
+            ? printParameters(x.parameters) + " -> " : "";
+        return prefix + (x.emit ? '[<Emit("' + x.emit + '")>] ' : "") + templates.property
             .replace("[NAME]", escape(x.name))
             .replace("[TYPE]", param + escape(x.type))
             .replace("[OPTION]", x.optional ? " option" : "");
@@ -290,12 +340,12 @@ function printParents(prefix, node, template) {
     }
 
     var lines = [];
-    node.parents.forEach(function(parentName) {
+    node.parents.forEach(function (parentName) {
         var nameNoArgs = parentName.replace(genReg, "");
         var parent = typeCache[nameNoArgs.indexOf(".") > 0 ? nameNoArgs : joinPath(node.path, nameNoArgs)];
         if (node.kind == "class") {
             if (parent && parent.kind == "class") {
-                lines.push(prefix + "inherit " + parentName + "()"); // TODO: Check base class constructor arguments?
+                lines.push(prefix + "inherit " + convertReactComponentClassNameIfNeeded(parentName) + "()"); // TODO: Check base class constructor arguments?
             }
             else {
                 if (parent != null && (parent.properties.length || parent.methods.length)) {
@@ -312,7 +362,7 @@ function printParents(prefix, node, template) {
                 printParentMembers(prefix, lines, parent, node);
             }
             else if (parentName != "obj") {
-                lines.push(prefix + "inherit " + parentName);
+                lines.push(prefix + "inherit " + convertReactComponentClassNameIfNeeded(parentName));
             }
         }
     });
@@ -333,9 +383,107 @@ function printMembers(prefix, ent) {
     ].filter(x => x.length > 0).join("\n");
 }
 
+function printFieldTypesForHelper(prefix, fields) {
+    return fields.map(p => {
+        return prefix 
+            + (p.isIgnored ? "// IGNORED " : p.isDuplicate ? "// OVERWRITTEN " : "") 
+            + (p.emit ? '[<Emit("' + p.emit + '")>] ' : "") 
+            + templates.fieldTypeForHelper
+                .replace("[NAME]", stringToUnionCase(p.name))
+                .replace("[TYPE]", escape(p.type))
+                .replace("[COMMENT]", p.parentName ? ("// " + p.parentName) : "");
+    }).filter(x => x.trim().length > 0).join("\n");
+}
+
+// function printFieldsForHelper(prefix, fields) {
+//     return fields.map(p => {
+//         return prefix 
+//             + (p.isIgnored ? "// IGNORED " : p.isDuplicate ? "// OVERWRITTEN " : "") 
+//             + (p.emit ? '[<Emit("' + p.emit + '")>] ' : "") 
+//             + templates.fieldForHelper
+//                 .replace("[NAME]", escape(p.name))
+//                 .replace("[TYPE]", escape(p.type))
+//                 .replace("[COMMENT]", p.parentName ? ("// " + p.parentName) : "");
+//     }).filter(x => x.trim().length > 0).join("\n");
+// }
+
+// function printConstructorParametersForPropsHelper(prefix, fields) {
+//     return fields.filter(p => !p.isDuplicate).map(p => {
+//         if (p.optional) return "";
+//         return prefix + templates.constructorParameterForPropsHelper
+//             .replace("[NAME]", escape(p.name))
+//             .replace("[TYPE]", escape(p.type));
+//     }).filter(x => x.trim().length > 0).join(",\n");
+// }
+
+// function printConstructorValuesForPropsHelper(prefix, fields) {
+//     return fields.filter(p => !p.isDuplicate && !p.isIgnored).map(p => {
+//         let value = "!";
+//         if (!p.optional) {
+//             value = escape(p.name);
+//         } else {
+//             var fieldType = typeCache[p.type];
+//             if (fieldType && fieldType.kind == "stringEnum" && fieldType.properties.length > 0)
+//                 value = stringToUnionCase(fieldType.properties[0].name);
+//             else
+//                 value = "Unchecked.defaultof<" + escape(p.type) + ">";
+//         }
+        
+//         return prefix + templates.constructorValueForPropsHelper
+//             .replace("[NAME]", escape(p.name))
+//             .replace("[VALUE]", value);
+//     }).filter(x => x.trim().length > 0).join("\n");
+// }
+
+function getFieldsForHelper(ent, parentName) {
+    var arr = getMembersForHelperSub(ent, parentName, []).filter(p => p != null);
+    arr.forEach((p, i) => p.isDuplicate = arr.find((p1, i1) => !p.isIgnored && i1 > i && p1.name == p.name));
+    return arr;
+}
+
+function getMembersForHelperSub(ent, parentName, visitedParents) {
+    var arr = [];
+    ent.parents
+        .filter(p => visitedParents.indexOf(p) < 0)
+        .map(getParentPropertiesForHelper(ent, visitedParents)).forEach(a => arr = arr.concat(a));
+    arr = arr.concat(ent.properties.map(getPropertiesForHelper(parentName)));
+    return arr;
+}
+
+function getParentPropertiesForHelper(node, visitedParents) {
+    return function (parentName) {
+        visitedParents.push(parentName);
+        var nameNoArgs = parentName.replace(genReg, "");
+        var parent = typeCache[nameNoArgs.indexOf(".") > 0 ? nameNoArgs : joinPath(node.path, nameNoArgs)];
+        if (parent) {
+            var arr = [];
+            getMembersForHelperSub(parent, parentName, visitedParents).forEach(a => arr = arr.concat(a));
+            return arr;
+        } else {
+            console.warn("!!!!! Parent " + nameNoArgs + " not found!");
+        }
+    }
+}
+
+function getPropertiesForHelper(parentName) {
+    return function (x) {
+        if (Array.isArray(x.parameters) && x.parameters.length > 0) return null;
+        var prop = {
+            emit: x.emit,
+            name: x.name,
+            type: x.type,
+            optional: x.optional,
+            parentName: parentName,
+            isIgnored: ignoreMembers.indexOf(parentName + "." + x.name) >= 0,
+            isDuplicate: false
+        };
+        return prop;
+    }
+}
+
 function printClassMethod(prefix) {
     return function (x) {
-        return prefix + (x.emit ? '[<Emit("' + x.emit +'")>] ' : "") + templates.classMethod
+        return prefix + (x.emit ? '[<Emit("' + x.emit + '")>] ' : "") + templates.classMethod
             .replace("[STATIC]", x.static ? "static " : "")
             .replace("[MEMBER_KEYWORD]", "member")
             .replace("[INSTANCE]", x.static ? "" : "__.")
@@ -347,7 +495,7 @@ function printClassMethod(prefix) {
 
 function printClassProperty(prefix) {
     return function (x) {
-        return prefix + (x.emit ? '[<Emit("' + x.emit +'")>] ' : "") + templates.classProperty
+        return prefix + (x.emit ? '[<Emit("' + x.emit + '")>] ' : "") + templates.classProperty
             .replace("[STATIC]", x.static ? "static " : "")
             .replace("[INSTANCE]", x.static ? "" : "__.")
             .replace("[NAME]", escape(x.name))
@@ -378,10 +526,27 @@ function printImport(path, name) {
 }
 
 function printInterface(prefix) {
+    function getTemplate(ifc) {
+        switch (ifc.kind) {
+            case "enum":
+                return templates.enum;
+            case "stringEnum":
+                return templates.stringEnum;
+            case "alias":
+                return templates.alias;
+            case "class":
+                return templates.class;
+            // case "interface":
+            default:
+                return templates.interface;
+        }
+    }
     function printDecorator(ifc) {
         switch (ifc.kind) {
             case "class":
-                return printImport(ifc.path, ifc.name);
+                return (skipAllowNullLiteral ? "" : "[<AllowNullLiteral>] ") + printImport(ifc.path, ifc.name);
+            case "interface":
+                return (skipAllowNullLiteral ? "" : "[<AllowNullLiteral>] ");
             // case "stringEnum":
             //     return "[<StringEnum>] ";
             default:
@@ -389,21 +554,12 @@ function printInterface(prefix) {
         }
     }
     return function (ifc, i) {
-        var isEnum = ifc.kind === "enum";
-        var isStringEnum = ifc.kind === "stringEnum";
-        var isAlias = ifc.kind === "alias";
-        var template = 
-            isEnum ? templates.enum : 
-            isStringEnum ? templates.stringEnum :
-            isAlias ? templates.alias :
-            templates.interface;
-        var template = 
-            prefix + template
-            .replace("[TYPE_KEYWORD]", "type")
-            .replace("[NAME]", escape(ifc.name))
-            .replace("[DECORATOR]", printDecorator(ifc))
-            .replace("[CONSTRUCTOR]", ifc.kind === "class"
-                ? "(" + printParameters(ifc.constructorParameters) + ")" : "");
+        var template =
+            prefix + getTemplate(ifc)
+                .replace("[NAME]", escape(ifc.name))
+                .replace("[DECORATOR]", printDecorator(ifc))
+                .replace("[CONSTRUCTOR]", ifc.kind === "class"
+                    ? "(" + printParameters(ifc.constructorParameters) + ")" : "");
 
         var tmp = printParents(prefix + "    ", ifc, template);
         var hasParents = tmp != template;
@@ -413,14 +569,14 @@ function printInterface(prefix) {
             case "alias":
                 return template += prefix + "    " + ifc.parents[0];
             case "enum":
-                return template + ifc.properties.map(function(currentValue) {
+                return template + ifc.properties.map(function (currentValue) {
                     var cv = templates.enumCase
-                                .replace("[NAME]", currentValue.name)
-                                .replace("[ID]", currentValue.value)
+                        .replace("[NAME]", currentValue.name)
+                        .replace("[ID]", currentValue.value)
                     return prefix + cv;
                 }).join("\n");
             case "stringEnum":
-                return template + prefix + prefix + "| " + ifc.properties.map(x =>
+                return template + prefix + "    " + "| " + ifc.properties.map(x =>
                     stringToUnionCase(x.name)).join(" | ");
             case "class":
                 var classMembers = printClassMembers(prefix + "    ", ifc);
@@ -439,7 +595,7 @@ function printInterface(prefix) {
 }
 
 function printGlobals(prefix, ent) {
-    var members = printClassMembers(prefix + "    " + (ent.name ? "" : "[<Global>] " ), ent);
+    var members = printClassMembers(prefix + "    " + (ent.name ? "" : "[<Global>] "), ent);
     if (members.length > 0) {
         let globalsName = (ent.properties.length > 0 ? ent.properties[0].name : (ent.methods.length > 0 ? ent.methods[0].name : "")) + "Globals"
         return prefix + templates.moduleProxy
@@ -449,8 +605,110 @@ function printGlobals(prefix, ent) {
     return "";
 }
 
+// function printInterfaceHelper(prefix) {
+//     return function (ifc, i) {
+//         if (ifc.kind !== "interface") return printInterface(prefix)(ifc, i);
+//         if (getReactComponentClassPropsTypeName(ifc)) return printInterface(prefix)(ifc, i);
+//         var fields = getFieldsForHelper(ifc);
+//         if (fields.length == 0) return printInterface(prefix)(ifc, i);
+//         return prefix + templates.unionTypeForHelper
+//             .replace(/\[NAME\]/g, escape(ifc.name))
+//             .replace("[TYPES]", printFieldTypesForHelper(prefix + "    ", fields));
+//     }
+// }
+
+// function printInterfaceHelper2(prefix) {
+//     function printDecorator(ifc) {
+//         return (skipAllowNullLiteral ? "" : "[<AllowNullLiteral>] ");
+//     }
+//     return function (ifc, i) {
+//         if (ifc.kind !== "interface") return printInterface(prefix)(ifc, i);
+//         if (getReactComponentClassPropsTypeName(ifc)) return printInterface(prefix)(ifc, i);
+//         var fields = getFieldsForHelper(ifc);
+//         if (fields.length == 0) return printInterface(prefix)(ifc, i);
+//         return prefix + templates.recordForHelper
+//             .replace(/\[NAME\]/g, escape(ifc.name))
+//             .replace("[DECORATOR]", printDecorator(ifc))
+//             .replace("[PROPERTIES]", printFieldsForHelper(prefix + "    ", fields));
+//     }
+// }
+
+function printReactComponentHelpers(prefix, ent) {
+    return [
+        printArray(ent.properties, printReactHelperComponent(prefix)),
+        // printArray(ent.methods, printClassMethod(prefix)),
+    ].filter(x => x.length > 0).join("\n");
+}
+
+function printReactHelperComponent(prefix) {
+    return function (x) {
+        var propsTypeName = getReactComponentClassPropsTypeName(x.type);
+        if (!propsTypeName) return "";
+        var propsType = typeCache[propsTypeName];
+        var fields = getFieldsForHelper(propsType);
+        var propTypeName = propsTypeName.substr(0, propsTypeName.length - 1);
+        return ""
+            + prefix + templates.componentHelperModule
+                .replace("[REACT_MODULE_NAME]", reactModuleName)
+                .replace(/\[COMPONENT_NAME\]/g, escape(x.name))
+                .replace("[COMPONENT_TYPE]", x.type.replace("<" + propsTypeName + ">", "<I" + propTypeName + ">"))
+                .replace(/\[PROP_NAME\]/g, escape(propTypeName))
+                .replace("[PROP_TYPES]", printFieldTypesForHelper(prefix + "    ", fields)) + "\n"
+        }
+}
+
+function getReactComponentClassPropsTypeName(ifc) {
+    function parsePropsTypeName(componentClassName) {
+        var propsName = componentClassName.substring(21, componentClassName.length - 1);
+        return propsName;
+    }
+    
+    if (typeof(ifc) === 'string') {
+        if (ifc.startsWith("React.ComponentClass<"))
+            return parsePropsTypeName(ifc);
+        ifc = typeCache[ifc];
+        if (!ifc) return undefined;
+    }
+    if (ifc.name.startsWith("React.ComponentClass<"))
+        return parsePropsTypeName(ifc.name);
+    var compClass = ifc.parents.find(p => p.startsWith("React.ComponentClass<"));
+    if (compClass) return parsePropsTypeName(compClass);
+    return undefined;
+}
+
+function convertReactComponentClassNameIfNeeded(className) {
+    var propsTypeName = getReactComponentClassPropsTypeName(className);
+    if (!propsTypeName) return className;
+    var propTypeName = propsTypeName.substr(0, propsTypeName.length - 1);
+    return className.replace("<" + propsTypeName + ">", "<I" + propTypeName + ">");
+}
+
+// function printReactHelperComponent2(prefix) {
+//     return function (x) {
+//         var propsTypeName = getReactComponentClassPropsTypeName(x.type);
+//         if (!propsTypeName) return "";
+//         var propsType = typeCache[propsTypeName];
+//         var fields = getFieldsForHelper(propsType);
+//         var subPrefix = prefix + "        ";
+//         var constructorParams = printConstructorParametersForPropsHelper(subPrefix + "    ", fields);
+//         if (constructorParams.length > 0) {
+//             constructorParams = "\n" + subPrefix + "(\n" + constructorParams + "\n" + subPrefix + ")";
+//         } else {
+//             constructorParams = "()";
+//         }
+
+//         return prefix + templates.componentHelperModule
+//             .replace("[REACT_MODULE_NAME]", reactModuleName)
+//             .replace(/\[COMPONENT_NAME\]/g, escape(x.name))
+//             .replace("[COMPONENT_TYPE]", x.type)
+//             .replace("[PROPS_CONSTRUCTOR_PARAMS]", constructorParams)
+//             .replace("[PROPS_TYPE]", escape(propsTypeName))
+//             .replace("[PROPS_VALUES]", printConstructorValuesForPropsHelper(subPrefix + "    ", fields));
+//         }
+// }
+
 function printModule(prefix) {
-    return function(mod) {
+    return function (mod) {
         var template = prefix + templates.module
             .replace("[NAME]", escape(mod.name));
 
@@ -468,9 +726,15 @@ function printModule(prefix) {
 function printFile(file) {
     var template = templates.file
         .replace('[NAMESPACE]', importNamespace);
-    template = append(template, file.interfaces.map(printInterface("")).join("\n\n"));
-    template = append(template, printGlobals("", file));
-    return template + file.modules.map(printModule("")).join("\n\n");
+    if (createReactHelpers) {
+        template = append(template, file.interfaces.map(printInterface("")).join("\n\n"));
+        template = append(template, printReactComponentHelpers("", file));
+        return template;
+    } else {
+        template = append(template, file.interfaces.map(printInterface("")).join("\n\n"));
+        template = append(template, printGlobals("", file));
+        return template + file.modules.map(printModule("")).join("\n\n");
+    }
 }
 
 function hasFlag(flags, flag) {
@@ -492,7 +756,7 @@ function printTypeArguments(typeArgs) {
     return typeArgs.length == 0 ? "" : "<" + typeArgs.map(getType).join(", ") + ">";
 }
 
- function findTypeParameters(node, acc) {
+function findTypeParameters(node, acc) {
     acc = acc || [];
     if (!node) {
         return acc;
@@ -501,7 +765,7 @@ function printTypeArguments(typeArgs) {
         node.typeParameters.forEach(x => acc.push(x.name.text));
     }
     return findTypeParameters(node.parent, acc);
- }
+}
 
 function getType(type) {
     if (!type) {
@@ -527,8 +791,8 @@ function getType(type) {
             }).join(" -> ");
             return "(" + (cbParams || "unit") + " -> " + getType(type.type) + ")";
         case ts.SyntaxKind.UnionType:
-            if (type.types && type.types[0].kind == ts.SyntaxKind.StringLiteralType)
-                return "(* TODO StringEnum " + type.types.map(x=>x.text).join(" | ") + " *) string";
+            if (type.types && type.types[0].kind == ts.SyntaxKind.LiteralType)
+                return "(* TODO StringEnum " + type.types.map(x => x.text).join(" | ") + " *) string";
             else if (type.types.length <= 4)
                 return "U" + type.types.length + printTypeArguments(type.types);
             else
@@ -588,25 +852,29 @@ function getProperty(node, opts) {
 }
 
 function getStringEnum(node) {
-    return {
+    var t = {
         kind: "stringEnum",
         name: getName(node),
         properties: node.type.types.map(function (n) {
-            return { name : n.literal.text }
+            return { name: n.literal.text }
         }),
         parents: [],
         methods: []
     }
+    cacheType(t);
+    return t;
 }
 
 function getSingleStringEnum(node) {
-    return {
+    var t = {
         kind: "stringEnum",
         name: getName(node),
-        properties: [ { name: node.type.literal.text } ],
+        properties: [{ name: node.type.literal.text }],
         parents: [],
         methods: []
     }
+    cacheType(t);
+    return t;
 }
 
 function getEnum(node) {
@@ -615,8 +883,8 @@ function getEnum(node) {
         name: getName(node),
         properties: node.members.map(function (n, i) {
             return {
-                name : getName(n),
-                value : n.initializer ? n.initializer.text : i
+                name: getName(n),
+                value: n.initializer ? n.initializer.text : i
             }
         }),
         parents: [],
@@ -675,16 +943,16 @@ function getMethod(node, opts) {
         parameters: node.parameters.map(getParameter)
     };
     var firstParam = node.parameters[0], secondParam = node.parameters[1];
-    if (secondParam && secondParam.type && secondParam.type.kind == ts.SyntaxKind.StringLiteralType) {
+    if (secondParam && secondParam.type && secondParam.type.kind == ts.SyntaxKind.LiteralType) {
         // The only case I've seen following this pattern is
         // createElementNS(namespaceURI: "http://www.w3.org/2000/svg", qualifiedName: "a"): SVGAElement
         meth.parameters = meth.parameters.slice(2);
-        meth.emit = `$0.${meth.name}('${firstParam.type.text}', '${secondParam.type.text}'${meth.parameters.length?',$1...':''})`;
+        meth.emit = `$0.${meth.name}('${firstParam.type.text}', '${secondParam.type.text}'${meth.parameters.length ? ',$1...' : ''})`;
         meth.name += '_' + secondParam.type.text;
     }
-    else if (firstParam && firstParam.type && firstParam.type.kind == ts.SyntaxKind.StringLiteralType) {
+    else if (firstParam && firstParam.type && firstParam.type.kind == ts.SyntaxKind.LiteralType) {
         meth.parameters = meth.parameters.slice(1);
-        meth.emit = `$0.${meth.name}('${firstParam.type.text}'${meth.parameters.length?',$1...':''})`;
+        meth.emit = `$0.${meth.name}('${firstParam.type.text}'${meth.parameters.length ? ',$1...' : ''})`;
         meth.name += '_' + firstParam.type.text;
     }
     return meth;
@@ -699,55 +967,59 @@ function getInterface(node, opts) {
     }
     opts = opts || {};
     var ifc = {
-      name: opts.name || (getName(node) + printTypeParameters(node.typeParameters)),
-      kind: opts.kind || "interface",
-      parents: opts.kind == "alias" ? [getType(node.type)] : getParents(node),
-      properties: [],
-      methods: [],
-      path: opts.path
+        name: opts.name || (getName(node) + printTypeParameters(node.typeParameters)),
+        kind: opts.kind || "interface",
+        parents: opts.kind == "alias" ? [getType(node.type)] : getParents(node),
+        properties: [],
+        methods: [],
+        path: opts.path
     };
     if (!opts.anonymous)
-        typeCache[joinPath(ifc.path, ifc.name.replace(genReg,""))] = ifc;
+        cacheType(ifc);
     return ifc;
 }
 
-function mergeNamesakes( xs, getName, mergeTwo ) {
-    var grouped = {};
-    xs.forEach( function(x) { 
-        var name = getName(x);
-        if ( !Array.isArray( grouped[name] ) ) grouped[name] = [];
-        grouped[name].push( x );
-    } );
-
-    return Object.keys(grouped).map( function(k) { return grouped[k].reduce( mergeTwo ); } );
+function cacheType(t) {
+    typeCache[joinPath(t.path, t.name.replace(genReg, ""))] = t;
 }
 
-function mergeInterfaces( a, b ) {
+function mergeNamesakes(xs, getName, mergeTwo) {
+    var grouped = {};
+    xs.forEach(function (x) {
+        var name = getName(x);
+        if (!Array.isArray(grouped[name])) grouped[name] = [];
+        grouped[name].push(x);
+    });
+
+    return Object.keys(grouped).map(function (k) { return grouped[k].reduce(mergeTwo); });
+}
+
+function mergeInterfaces(a, b) {
     return {
         name: a.name,
         kind: a.kind,
         parents: a.parents,
         path: a.path,
-        properties: a.properties.concat( b.properties ),
-        methods: a.methods.concat( b.methods )
+        properties: a.properties.concat(b.properties),
+        methods: a.methods.concat(b.methods)
     };
 }
 
-function mergeNamesakeInterfaces( intfs ) {
-    return mergeNamesakes( intfs, function(i) { return i.name; }, mergeInterfaces );
+function mergeNamesakeInterfaces(intfs) {
+    return mergeNamesakes(intfs, function (i) { return i.name; }, mergeInterfaces);
 }
 
 function visitInterface(node, opts) {
     var ifc = getInterface(node, opts);
-    (node.members || []).forEach(function(node) {
+    (node.members || []).forEach(function (node) {
         var member, name;
         switch (node.kind) {
             case ts.SyntaxKind.PropertySignature:
             case ts.SyntaxKind.PropertyDeclaration:
                 if (node.name.kind == ts.SyntaxKind.ComputedPropertyName) {
                     name = getName(node.name);
-                    member = getProperty(node, { name: "["+name+"]" });
-                    member.emit = "$0["+name+"]{{=$1}}";
+                    member = getProperty(node, { name: "[" + name + "]" });
+                    member.emit = "$0[" + name + "]{{=$1}}";
                 }
                 else {
                     member = getProperty(node);
@@ -765,8 +1037,8 @@ function visitInterface(node, opts) {
             case ts.SyntaxKind.MethodDeclaration:
                 if (node.name.kind == ts.SyntaxKind.ComputedPropertyName) {
                     name = getName(node.name);
-                    member = getMethod(node, { name: "["+name+"]" });
-                    member.emit = "$0["+name+"]($1...)";
+                    member = getMethod(node, { name: "[" + name + "]" });
+                    member.emit = "$0[" + name + "]($1...)";
                 }
                 else {
                     member = getMethod(node);
@@ -793,23 +1065,23 @@ function visitInterface(node, opts) {
     return ifc;
 }
 
-function mergeModules( a, b ) {
+function mergeModules(a, b) {
     return {
         name: a.name,
         path: a.path,
-        interfaces: mergeNamesakeInterfaces( a.interfaces.concat( b.interfaces ) ),
-        properties: a.properties.concat( b.properties ),
-        methods: a.methods.concat( b.methods ),
-        modules: mergeNamesakeModules( a.modules.concat( b.modules ) )
+        interfaces: mergeNamesakeInterfaces(a.interfaces.concat(b.interfaces)),
+        properties: a.properties.concat(b.properties),
+        methods: a.methods.concat(b.methods),
+        modules: mergeNamesakeModules(a.modules.concat(b.modules))
     };
 }
 
-function mergeNamesakeModules( modules ) {
-    return mergeNamesakes( modules, function(m) { return m.name; }, mergeModules );
+function mergeNamesakeModules(modules) {
+    return mergeNamesakes(modules, function (m) { return m.name; }, mergeModules);
 }
 
 function visitModuleNode(mod, modPath) {
-    return function(node) {
+    return function (node) {
         switch (node.kind) {
             case ts.SyntaxKind.InterfaceDeclaration:
                 mod.interfaces.push(visitInterface(node, { kind: "interface", path: modPath }));
@@ -835,7 +1107,7 @@ function visitModuleNode(mod, modPath) {
                 break;
             case ts.SyntaxKind.ModuleDeclaration:
                 var m = visitModule(node, { path: modPath });
-                var isEmpty = Object.keys(m).every(function(k) { return !Array.isArray(m[k]) || m[k].length === 0 });
+                var isEmpty = Object.keys(m).every(function (k) { return !Array.isArray(m[k]) || m[k].length === 0 });
                 if (!isEmpty)
                     mod.modules.push(m);
                 break;
@@ -849,20 +1121,20 @@ function visitModuleNode(mod, modPath) {
 function visitModule(node, opts) {
     opts = opts || {};
     var mod = {
-      name: getName(node),
-      path: opts.path,
-      interfaces: [],
-      properties: [],
-      methods: [],
-      modules: []
+        name: getName(node),
+        path: opts.path,
+        interfaces: [],
+        properties: [],
+        methods: [],
+        modules: []
     };
     var modPath = joinPath(mod.path, mod.name);
-    
-    switch ( node.body.kind ) {
+
+    switch (node.body.kind) {
         case ts.SyntaxKind.ModuleDeclaration:
             mod.modules.push(visitModule(node.body, { path: modPath }));
             break;
-            
+
         case ts.SyntaxKind.ModuleBlock:
             node.body.statements.forEach(visitModuleNode(mod, modPath));
             break;
@@ -873,10 +1145,10 @@ function visitModule(node, opts) {
 
 function visitFile(node) {
     var file = {
-      interfaces: [],
-      properties: [],
-      methods: [],
-      modules: []
+        interfaces: [],
+        properties: [],
+        methods: [],
+        modules: []
     };
 
     ts.forEachChild(node, visitModuleNode(file, null));
@@ -885,19 +1157,23 @@ function visitFile(node) {
         properties: file.properties,
         interfaces: file.interfaces,
         methods: file.methods,
-        modules: mergeNamesakeModules( file.modules )
+        modules: mergeNamesakeModules(file.modules)
     };
 }
 
-function loadConfig(config)
-{
+function loadConfig(config) {
     if (config.mappedTypes)
         Object.assign(mappedTypes, config.mappedTypes);
     if (config.importNamespace)
         importNamespace = config.importNamespace;
-    if (config.skipAllowNullLiteral)
-        templates.interface = templates.interfaceWithoutAllowNullLiteral;
-    useComposition = config.useComposition;
+    skipAllowNullLiteral = config.skipAllowNullLiteral;
+    if (config.createReactHelpersFor) {
+        createReactHelpers = true;
+        reactModuleName = config.createReactHelpersFor;
+    }
+    typeCacheFile = config.typeCacheFile;
+    if (config.ignoreMembers)
+        ignoreMembers = ignoreMembers.concat(config.ignoreMembers);
 }
 
 try {
@@ -910,12 +1186,23 @@ try {
         // loadConfig(fs.readFileSync(configFilePath).toString());
         // loadConfig(require(configFilePath));
         loadConfig(JSON.parse(fs.readFileSync(configFilePath).toString()));
-        
+
+    if (typeCacheFile) {
+        try {
+            typeCache = JSON.parse(fs.readFileSync(typeCacheFile).toString());
+        }
+        catch (e) {
+            typeCache = {};
+        }
+    }
+
     // fileName = (fileName = path.basename(filePath).replace(".d.ts",""), fileName[0].toUpperCase() + fileName.substr(1));
     // `readonly` keyword is causing problems, remove it
     var code = fs.readFileSync(filePath).toString().replace(/readonly/g, "");
     var sourceFile = ts.createSourceFile(filePath, code, ts.ScriptTarget.ES6, /*setParentNodes*/ true);
     var fileInfo = visitFile(sourceFile);
+    if (typeCacheFile)
+        fs.writeFileSync(typeCacheFile, JSON.stringify(typeCache, null, 4));
     var ffi = printFile(fileInfo)
     console.log('// ' + filePath);
     console.log(ffi);
