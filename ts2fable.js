@@ -12,6 +12,7 @@ open Fable.Core
 open Fable.Import
 open Fable.Import.JS
 open Fable.Core.JsInterop
+open Fable.Import.Browser
 
 `,
 
@@ -253,6 +254,8 @@ function stringToUnionCase(str) {
         return `[<CompiledName("")>] EmptyString`;
     else if (/^[A-Z]/.test(str))
         return `[<CompiledName("${str}")>] ${escape(str)}`;
+    else if (/^[0-9]/.test(str))
+        return `[<CompiledName("${str}")>] ${escape('E' + str)}`;
     else
         return escape(upperFirstLetter(str));
 }
@@ -762,14 +765,28 @@ function getStringEnum(node) {
     var t = {
         kind: "stringEnum",
         name: getName(node),
-        properties: node.type.types.map(function (n) {
-            return { name: n.literal.text }
-        }),
+        properties: node.type.types
+            .filter(t => t.kind == ts.SyntaxKind.LiteralType)
+            .map(t => { return { name: t.literal.text } })
+            .concat(getInheritedStringEnumProperties(node)),
         parents: [],
         methods: []
     }
     cacheType(t);
     return t;
+}
+
+function getInheritedStringEnumProperties(node) {
+    return node.type.types
+        .filter(t => t.kind == ts.SyntaxKind.TypeReference)
+        .map(t => {
+            var inheritedType = typeCache[t.typeName.text];
+            if (inheritedType && inheritedType.kind == "stringEnum")
+                return inheritedType.properties;
+            else
+                return [ { name: t.typeName.text } ];
+        })
+        .reduce((flat, next) => flat.concat(next), []);
 }
 
 function getSingleStringEnum(node) {
