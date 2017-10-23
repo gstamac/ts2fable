@@ -677,6 +677,13 @@ function findTypeParameters(node, acc) {
     return findTypeParameters(node.parent, acc);
 }
 
+function mapTypeIfNeeded(type) {
+    if (type in mappedTypes) {
+        return mappedTypes[type];
+    }
+    return type;
+}
+
 function getType(type) {
     if (!type) {
         return "obj";
@@ -694,21 +701,21 @@ function getType(type) {
         case ts.SyntaxKind.SymbolKeyword:
             return "Symbol";
         case ts.SyntaxKind.ArrayType:
-            return "ResizeArray<" + getType(type.elementType) + ">";
+            return mapTypeIfNeeded("ResizeArray<" + getType(type.elementType) + ">");
         case ts.SyntaxKind.FunctionType:
             var cbParams = type.parameters.map(function (x) {
                 return x.dotDotDotToken ? "obj" : getType(x.type);
             }).join(" -> ");
-            return "(" + (cbParams || "unit") + " -> " + getType(type.type) + ")";
+            return mapTypeIfNeeded("(" + (cbParams || "unit") + " -> " + getType(type.type) + ")");
         case ts.SyntaxKind.UnionType:
             if (type.types && type.types[0].kind == ts.SyntaxKind.LiteralType)
                 return "(* TODO StringEnum " + type.types.map(x => x.text).join(" | ") + " *) string";
             else if (type.types.length <= 4)
-                return "U" + type.types.length + printTypeArguments(type.types);
+                return mapTypeIfNeeded("U" + type.types.length + printTypeArguments(type.types));
             else
                 return "obj";
         case ts.SyntaxKind.TupleType:
-            return type.elementTypes.map(getType).join(" * ");
+            return mapTypeIfNeeded(type.elementTypes.map(getType).join(" * "));
         case ts.SyntaxKind.ParenthesizedType:
             return getType(type.type);
         // case ts.SyntaxKind.TypeQuery:
@@ -725,14 +732,9 @@ function getType(type) {
             if (!name) {
                 return "obj"
             }
-            if (name in mappedTypes) {
-                name = mappedTypes[name];
-            }
+            name = mapTypeIfNeeded(name);
 
-            var result = name + printTypeArguments(type.typeArguments);
-            if (result in mappedTypes) {
-                result = mappedTypes[result];
-            }
+            var result = mapTypeIfNeeded(name + printTypeArguments(type.typeArguments));
             return (typeParameters.indexOf(result) > -1 ? "'" : "") + result;
     }
 }
