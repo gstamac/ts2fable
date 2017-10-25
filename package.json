@@ -27,6 +27,7 @@
   },
   "homepage": "https://github.com/fable-compiler/Fable#readme",
   "dependencies": {
-    "typescript": "^2.3.2"
+    "shelljs": "^0.7.8",
+    "typescript": "^2.5.3"
   }
 }

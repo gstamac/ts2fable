@@ -13,6 +13,7 @@ open Fable.Import
 open Fable.Import.JS
 open Fable.Core.JsInterop
 open Fable.Import.Browser
+[EXTRA_OPENS]
 
 `,
 
@@ -71,13 +72,17 @@ fieldForHelper:
 `[NAME]: [TYPE] [COMMENT]`,
 
 fieldTypeForHelper:
-`| [NAME] of [TYPE] [COMMENT]`,
+`| [DECORATOR][NAME] of [TYPE] [COMMENT]`,
+
+arrayFieldHelper:
+`static member [NAME] (l: [ITEM_TYPE] list) = [NAME_FOR_ARRAY] (l |> [TYPE]) [COMMENT]`,
 
 componentHelperModule:
 `type I[PROP_NAME] = inherit Fable.Helpers.React.Props.IHTMLProp
 type [PROP_NAME] = 
 [PROP_TYPES]
     interface I[PROP_NAME]
+[ARRAY_PROP_HELPERS]
 
 module [COMPONENT_NAME] =
     [<Import("[COMPONENT_NAME]", from="[REACT_MODULE_NAME]")>]
@@ -85,18 +90,6 @@ module [COMPONENT_NAME] =
 
     let inline comp (b: I[PROP_NAME] list) c = Fable.Helpers.React.from [COMPONENT_NAME]Comp !!(keyValueList CaseRules.LowerFirst b) c
     let inline comp2 (b: Fable.Helpers.React.Props.IHTMLProp list) c = Fable.Helpers.React.from [COMPONENT_NAME]Comp !!(keyValueList CaseRules.LowerFirst b) c
-`,
-
-componentHelperModule2:
-`module [COMPONENT_NAME] =
-    let props[PROPS_CONSTRUCTOR_PARAMS]: [PROPS_TYPE] = {
-[PROPS_VALUES]
-        }
-        
-    [<Import("[COMPONENT_NAME]", from="[REACT_MODULE_NAME]")>]
-    let [COMPONENT_NAME]Comp: [COMPONENT_TYPE] = jsNative 
-
-    let inline comp b c = Fable.Helpers.React.from [COMPONENT_NAME]Comp b c
 `,
 
 constructorParameterForPropsHelper:
@@ -225,6 +218,7 @@ var mappedTypes = {
     Number: "float"
 };
 var importNamespace = 'Fable.Import';
+var extraOpens = "";
 var skipAllowNullLiteral = false;
 var createReactHelpers = false;
 var reactModuleName = "";
@@ -348,7 +342,7 @@ function printParents(prefix, node, template) {
         var parent = typeCache[nameNoArgs.indexOf(".") > 0 ? nameNoArgs : joinPath(node.path, nameNoArgs)];
         if (node.kind == "class") {
             if (parent && parent.kind == "class") {
-                lines.push(prefix + "inherit " + convertReactComponentClassNameIfNeeded(parentName) + "()"); // TODO: Check base class constructor arguments?
+                lines.push(prefix + "inherit " + parentName + "()"); // TODO: Check base class constructor arguments?
             }
             else {
                 if (parent != null && (parent.properties.length || parent.methods.length)) {
@@ -365,7 +359,7 @@ function printParents(prefix, node, template) {
                 printParentMembers(prefix, lines, parent, node);
             }
             else if (parentName != "obj") {
-                lines.push(prefix + "inherit " + convertReactComponentClassNameIfNeeded(parentName));
+                lines.push(prefix + "inherit " + parentName);
             }
         }
     });
@@ -386,16 +380,44 @@ function printMembers(prefix, ent) {
     ].filter(x => x.length > 0).join("\n");
 }
 
+// `| [NAME] of [TYPE] [COMMENT]`,
 function printFieldTypesForHelper(prefix, fields) {
     return fields.map(p => {
+        var name = p.name;
+        var compiledName = "";
+        if (!p.emit && isArrayType(p.type)) {
+            compiledName = '[<CompiledName("' + name + '")>] ';
+            name += "A";
+        }
         return prefix 
             + (p.isDuplicate ? "// OVERWRITTEN " : "") 
-            + (p.emit ? '[<Emit("' + p.emit + '")>] ' : "") 
             + templates.fieldTypeForHelper
-                .replace("[NAME]", stringToUnionCase(p.name))
+                .replace("[DECORATOR]", (p.emit ? '[<Emit("' + p.emit + '")>] ' : compiledName))
+                .replace("[NAME]", stringToUnionCase(name))
                 .replace("[TYPE]", escape(p.type))
                 .replace("[COMMENT]", p.parentName ? ("// " + p.parentName) : "");
     }).filter(x => x.trim().length > 0).join("\n");
+}
+
+// `static member [NAME]L (l: [ITEM_TYPE] list) = [NAME] (l |> [TYPE]) [COMMENT]`,
+function printArrayFieldHelpers(prefix, fields) {
+    return fields.filter(p => !p.isDuplicate && !p.emit && isArrayType(p.type)).map(p => {
+        return prefix 
+            + templates.arrayFieldHelper
+                .replace("[NAME]", stringToUnionCase(p.name))
+                .replace("[NAME_FOR_ARRAY]", stringToUnionCase(p.name + "A"))
+                .replace("[TYPE]", escape(p.type))
+                .replace("[ITEM_TYPE]", escape(getArrayItemType(p.type)))
+                .replace("[COMMENT]", p.parentName ? ("// " + p.parentName) : "");
+    }).filter(x => x.trim().length > 0).join("\n");
+}
+
+function isArrayType(type) {
+    return type.startsWith("ResizeArray<");
+}
+
+function getArrayItemType(type) {
+    return type.substr(12, type.length - 13);
 }
 
 function getFieldsForHelper(ent, parentName) {
@@ -575,47 +597,77 @@ function printReactComponentHelpers(prefix, ent) {
 }
 
 function printReactHelperComponent(prefix) {
+    function removeGenerics(name) {
+        var execed = /^([^<]+)<.*>/.exec(name);
+        if (execed == null) return name;
+        return execed[1];
+    }
     return function (x) {
         var propsTypeName = getReactComponentClassPropsTypeName(x.type);
         if (!propsTypeName) return "";
+        if (propsTypeName.startsWith("'"))
+            propsTypeName = getReactComponentClassPropsTypeNameFromName(x.name);
         var propsType = typeCache[propsTypeName];
+        if (!propsType) return "";
         var fields = getFieldsForHelper(propsType);
         var propTypeName = propsTypeName.substr(0, propsTypeName.length - 1);
-        return ""
-            + prefix + templates.componentHelperModule
+        var type = x.type.replace("<" + propsTypeName + ">", "<I" + propTypeName + ">");
+        if (type.startsWith("React.Component<"))
+            type = "React.ComponentClass<I" + propTypeName + ">";
+        return prefix + templates.componentHelperModule
                 .replace("[REACT_MODULE_NAME]", reactModuleName)
-                .replace(/\[COMPONENT_NAME\]/g, escape(x.name))
-                .replace("[COMPONENT_TYPE]", x.type.replace("<" + propsTypeName + ">", "<I" + propTypeName + ">"))
+                .replace(/\[COMPONENT_NAME\]/g, escape(removeGenerics(x.name)))
+                .replace("[COMPONENT_TYPE]", type)
                 .replace(/\[PROP_NAME\]/g, escape(propTypeName))
-                .replace("[PROP_TYPES]", printFieldTypesForHelper(prefix + "    ", fields)) + "\n"
+                .replace("[PROP_TYPES]", printFieldTypesForHelper(prefix + "    ", fields))
+                .replace("[ARRAY_PROP_HELPERS]", printArrayFieldHelpers(prefix + "    ", fields))
+                 + "\n"
         }
 }
 
+function printReactHelperComponentForInterface(prefix) {
+    return function (ifc, i) {
+        var x = {
+            type: ifc.parents[0],
+            name: ifc.name
+        };
+        return printReactHelperComponent(prefix)(x);
+    }
+}
+
 function getReactComponentClassPropsTypeName(ifc) {
-    function parsePropsTypeName(componentClassName) {
-        var propsName = componentClassName.substring(21, componentClassName.length - 1);
+    function parsePropsTypeName(componentClassName, start) {
+        var propsName = componentClassName.substring(start, componentClassName.length - 1);
         return propsName;
     }
     
     if (typeof(ifc) === 'string') {
         if (ifc.startsWith("React.ComponentClass<"))
-            return parsePropsTypeName(ifc);
+            return parsePropsTypeName(ifc, 21);
+        if (ifc.startsWith("React.Component<"))
+            return parsePropsTypeName(ifc, 16);
         ifc = typeCache[ifc];
         if (!ifc) return undefined;
     }
     if (ifc.name.startsWith("React.ComponentClass<"))
-        return parsePropsTypeName(ifc.name);
+        return parsePropsTypeName(ifc.name, 21);
     var compClass = ifc.parents.find(p => p.startsWith("React.ComponentClass<"));
-    if (compClass) return parsePropsTypeName(compClass);
+    if (compClass) return parsePropsTypeName(compClass, 21);
     return undefined;
 }
 
-function convertReactComponentClassNameIfNeeded(className) {
-    var propsTypeName = getReactComponentClassPropsTypeName(className);
-    if (!propsTypeName) return className;
-    var propTypeName = propsTypeName.substr(0, propsTypeName.length - 1);
-    return className.replace("<" + propsTypeName + ">", "<I" + propTypeName + ">");
+function getReactComponentClassPropsTypeNameFromName(name) {
+    var execed = /^[^<]+<'(.+) when '(.+) :> ([^ >]+)/.exec(name);
+    if (execed == null) return "";
+    return execed[3];
 }
+
+// function convertReactComponentClassNameIfNeeded(className) {
+//     var propsTypeName = getReactComponentClassPropsTypeName(className);
+//     if (!propsTypeName) return className;
+//     var propTypeName = propsTypeName.substr(0, propsTypeName.length - 1);
+//     return className.replace("<" + propsTypeName + ">", "<I" + propTypeName + ">");
+// }
 
 function printModule(prefix) {
     return function (mod) {
@@ -635,11 +687,17 @@ function printModule(prefix) {
 
 function printFile(file) {
     var template = templates.file
-        .replace('[NAMESPACE]', importNamespace);
+        .replace('[NAMESPACE]', importNamespace)
+        .replace('[EXTRA_OPENS]', extraOpens);
     if (createReactHelpers) {
-        template = append(template, file.interfaces.map(printInterface("")).join("\n\n"));
+        template = append(template, file.interfaces.map((ifc, i) => {
+            if (ifc.parents && (ifc.kind == "class") && (ifc.parents.length > 0) && ifc.parents[0].startsWith("React.Component<"))
+                return printReactHelperComponentForInterface("")(ifc, i);
+            else
+                return printInterface("")(ifc, i);
+        }).join("\n\n"));
         template = append(template, printReactComponentHelpers("", file));
-        return template;
+        return template + file.modules.map(printModule("")).join("\n\n");
     } else {
         template = append(template, file.interfaces.map(printInterface("")).join("\n\n"));
         template = append(template, printGlobals("", file));
@@ -681,6 +739,9 @@ function mapTypeIfNeeded(type) {
     if (type in mappedTypes) {
         return mappedTypes[type];
     }
+    // if (convertReactComponent && type.startsWith("React.Component<")) {
+    //     type = type.replace("React.Component<", "React.ComponentClass<");
+    // }
     return type;
 }
 
@@ -888,7 +949,8 @@ function getInterface(node, opts) {
     function printTypeParameters(typeParams) {
         typeParams = typeParams || [];
         return typeParams.length == 0 ? "" : "<" + typeParams.map(function (x) {
-            return "'" + x.name.text
+            var tName = "'" + x.name.text;
+            return tName + (x.constraint ? (" when " + tName + " :> " + x.constraint.typeName.escapedText) : "")
         }).join(", ") + ">";
     }
     opts = opts || {};
@@ -1092,6 +1154,8 @@ function loadConfig(config) {
         Object.assign(mappedTypes, config.mappedTypes);
     if (config.importNamespace)
         importNamespace = config.importNamespace;
+    if (config.extraOpens)
+        extraOpens = config.extraOpens.join("\n");
     skipAllowNullLiteral = config.skipAllowNullLiteral;
     if (config.createReactHelpersFor) {
         createReactHelpers = true;
